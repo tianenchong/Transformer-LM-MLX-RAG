@@ -199,7 +199,7 @@ See `requirements.txt` for pinned runtime deps. The codebase uses the following 
 ## Notes & next steps
 
 - If you rely on a RAM disk, update `--save_dir` accordingly; otherwise choose a local writable path.
-- If you want reproducible runs, set `--seed` and use `--new_model` when starting fresh.
+- Use `--new_model` when starting fresh.
 - Once the retriever model is finalized, save chunk embeddings to a vector database to avoid redundant computation during future retriever operations. This optimization stores pre-computed embeddings so that the retriever model does not need to re-embed chunks on subsequent queries.
 
 ## Future Work
