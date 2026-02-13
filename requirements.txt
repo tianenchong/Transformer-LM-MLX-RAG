@@ -1,0 +1,7 @@
+# Project dependencies
+numpy
+dill
+safetensors
+mlx
+sentencepiece
+mlx_lm

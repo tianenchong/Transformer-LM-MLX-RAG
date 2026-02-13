@@ -1,0 +1,76 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg xmlns="http://www.w3.org/2000/svg" width="1100" height="360" viewBox="0 0 1100 360">
+  <style>
+    .box { fill: #f6f8fa; stroke: #333; stroke-width: 1.5px; rx:8; }
+    .title { font: 600 14px sans-serif; fill: #111 }
+    .small { font: 12px sans-serif; fill: #222 }
+    .arrow { stroke: #333; stroke-width: 2px; fill: none; marker-end: url(#arrowhead); }
+  </style>
+  <defs>
+    <marker id="arrowhead" markerWidth="10" markerHeight="7" refX="10" refY="3.5" orient="auto">
+      <polygon points="0 0, 10 3.5, 0 7" fill="#333" />
+    </marker>
+  </defs>
+
+  <!-- Documents -->
+  <rect class="box" x="20" y="20" width="160" height="70"/>
+  <text class="title" x="100" y="45" text-anchor="middle">Documents</text>
+  <text class="small" x="100" y="65" text-anchor="middle">wikipedia/*.txt</text>
+
+  <!-- Chunking -->
+  <rect class="box" x="260" y="20" width="180" height="70"/>
+  <text class="title" x="350" y="45" text-anchor="middle">Chunking</text>
+  <text class="small" x="350" y="65" text-anchor="middle">window_size = context_size</text>
+
+  <!-- Chunk store -->
+  <rect class="box" x="520" y="20" width="160" height="70"/>
+  <text class="title" x="600" y="45" text-anchor="middle">Chunk store</text>
+  <text class="small" x="600" y="65" text-anchor="middle">tokenized chunks array</text>
+
+  <!-- Retriever -->
+  <rect class="box" x="820" y="10" width="252" height="95"/>
+  <text class="title" x="946" y="35" text-anchor="middle">Retriever</text>
+  <text class="small" x="946" y="58" text-anchor="middle">RecurringTransformerLM → 64‑d embeddings</text>
+
+  <!-- Arrows top row -->
+  <path class="arrow" d="M180 55 L260 55" />
+  <path class="arrow" d="M440 55 L520 55" />
+  <path class="arrow" d="M680 55 L820 55" />
+
+  <!-- Query flow -->
+  <rect class="box" x="20" y="140" width="280" height="70"/>
+  <text class="title" x="160" y="165" text-anchor="middle">Query / Question</text>
+  <text class="small" x="160" y="185" text-anchor="middle">SentencePiece → token ids</text>
+
+  <!-- Query->Top-K arrow will be rendered after Top-K box so arrowhead is visible -->
+
+  <!-- Top-K -->
+  <rect class="box" x="460" y="140" width="260" height="70"/>
+  <text class="title" x="590" y="165" text-anchor="middle">Top-K Retrieval</text>
+  <text class="small" x="590" y="185" text-anchor="middle">Brute-force inner-product + argpartition</text>
+
+  <path class="arrow" d="M720 175 L820 175" />
+    <!-- Query -> Top-K arrow (route below boxes and touch Top-K bottom edge) -->
+    <path class="arrow" d="M150 210 L150 240 L590 240 L590 210" />
+
+  <!-- Generator -->
+  <rect class="box" x="820" y="140" width="252" height="90"/>
+  <text class="title" x="946" y="165" text-anchor="middle">Generator</text>
+  <text class="small" x="946" y="185" text-anchor="middle">Encoder‑Decoder LM conditioned on chunks</text>
+  <text class="small" x="946" y="205" text-anchor="middle">accepts top-K tokenized chunks</text>
+
+  <!-- Retriever -> Generator arrow -->
+  <path class="arrow" d="M946 105 L946 138" />
+
+  <!-- Output -->
+  <rect class="box" x="820" y="265" width="252" height="70"/>
+  <text class="title" x="946" y="300" text-anchor="middle">Answer / Output</text>
+
+  <path class="arrow" d="M946 230 L946 265" />
+
+  <!-- Legend / Tokenizer -->
+  <rect x="20" y="240" width="280" height="100" fill="#fff0" stroke="none"/>
+  <text class="small" x="280" y="260">Tokenizer: SentencePiece (wiki.model)</text>
+  <text class="small" x="280" y="280">Embedding dim: 64 (out_proj)</text>
+
+</svg>
