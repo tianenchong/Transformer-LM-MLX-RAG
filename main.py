@@ -95,10 +95,13 @@ parser.add_argument(
     "--lr_warmup", type=int, default=200, help="LR linear warmup iterations"
 )
 parser.add_argument(
-    "--identifier", type=str, default=None, help="model file identifier"
+    "--identifier", type=str, default=None, help="generator model file identifier"
 )
 parser.add_argument(
     "--retriever_identifier", type=str, default=None, help="retriever model file identifier"
+)
+parser.add_argument(
+    "--embedding_identifier", type=str, default=None, help="embedding model file identifier"
 )
 parser.add_argument(
     "--steps_per_report",
@@ -204,18 +207,18 @@ def save_invalid_question_ids(question_ids = set()):
     with open(os.path.join(to_qa_dir, "unsupported-wikipedia-train.json"), "w", encoding="utf-8") as output_file:
         output_file.write(json.dumps({"question_ids": list(question_ids)}))
 
+def _mx2np(mx_tuple: tuple[str, mx.array]) -> Dict[str, np.ndarray]:
+    new_dict = {}
+    for k, v in mx_tuple:
+        new_dict[k] = np.asarray(v)
+    return new_dict
+
+def git_hash_bytes(data_bytes):
+    sha1 = hashlib.sha1(data_bytes).hexdigest()
+    return sha1
+
 def save(model, optimizer, it, type="retriever", exit_after_save=False):
     saving_in_progress.set()
-
-    def _mx2np(mx_tuple: tuple[str, mx.array]) -> Dict[str, np.ndarray]:
-        new_dict = {}
-        for k, v in mx_tuple:
-            new_dict[k] = np.asarray(v)
-        return new_dict
-
-    def git_hash_bytes(data_bytes):
-        sha1 = hashlib.sha1(data_bytes).hexdigest()
-        return sha1
 
     saved = False
     try:
@@ -330,6 +333,87 @@ def save(model, optimizer, it, type="retriever", exit_after_save=False):
         if exit_after_save:
             print(f"\r\nExiting.")
             sys.exit(0)  # Exit immediately
+
+def save_embedding(chunk_embeddings):
+    saving_in_progress.set()
+    saved = False
+    try:
+        np_embedding = np.asarray(chunk_embeddings)
+        embedding_bytes = numpy.save({"embedding": np_embedding})
+        embedding_hash = git_hash_bytes(embedding_bytes)
+        embedding_type_extension = ".embedding"
+        embedding_extension = ".safetensors"
+        new_extension = ".new"
+        embedding_path = model_folder + "/" + embedding_hash + embedding_type_extension
+
+        while not saved:
+            try:
+                # Critical save section: do NOT abort mid-way
+                with open(
+                    embedding_path + embedding_extension + new_extension,
+                    "wb",
+                ) as f:
+                    f.write(embedding_bytes)
+                    f.flush()
+                    os.fsync(f.fileno())
+
+                safe_open(
+                    embedding_path + embedding_extension + new_extension,
+                    framework="np",
+                )
+
+            except Exception as e:
+                print("Save error:", e)
+                # Check force_exit before retrying
+                if force_exit.is_set():
+                    print(
+                        f"\r\nForce exit detected during save error handling. Aborting save."
+                    )
+                    break  # Abort save immediately
+
+                # Sleep in 1 second chunks to be able to check force_exit regularly
+                sleep_seconds = 300  # 5 minutes
+                for _ in range(sleep_seconds):
+                    if force_exit.is_set():
+                        print(
+                            f"\r\nForce exit detected during save retry sleep. Aborting save."
+                        )
+                        break
+                    time.sleep(1)
+
+                continue  # retry after sleep
+
+            # If save and load succeeded, break out of retry loop
+            saved = True
+
+        if saved:
+            # Rename atomically if we got here
+            try:
+                for name in os.listdir(model_folder):
+                    path = os.path.join(model_folder, name)
+
+                    if not os.path.isfile(path):
+                        continue
+
+                    if embedding_type_extension in name and (not name.startswith(embedding_hash) or not name.endswith(
+                        new_extension
+                    )):  # ensure old embedding lingering new if exist also get removed, except new embedding
+                        os.remove(path)
+
+            except Exception:
+                pass
+            finally:
+                os.rename(
+                    embedding_path + embedding_extension + new_extension,
+                    embedding_path + embedding_extension,
+                )
+                print("embedding saved.")
+        else:
+            print(f"\r\nSave aborted due to forced exit.")
+            print(f"\r\nExiting.")
+            sys.exit(0)  # Exit immediately
+    finally:
+        saving_in_progress.clear()
 
 class ModelFile:
     identifier: str
@@ -450,17 +534,30 @@ def load_checkpoint(
                 optimizer_state = tree_unflatten(optimizer_state_flattened)
                 optimizer.state = optimizer_state
 
-            # if type=="generator":
-            #     if "s" in checkpoint:
-            #         data_src.s = checkpoint["s"]
-            #         data_src.increment_s()
-
-            #     if "perm" in checkpoint:
-            #         data_src.perm = mx.array(checkpoint["perm"])
-
             if "start" in checkpoint:
                 return checkpoint["start"]
 
+    return None
+
+def load_embedding(
+    embedding_file_identifier: Optional[str] = None
+):
+    if embedding_file_identifier == None:
+        print(f"embedding file not found.")
+        return
+
+    type_extension = ".embedding"
+    target_file_path = model_folder + "/" + embedding_file_identifier + type_extension + model_file_extension
+
+    if args.new_model or not os.path.isfile(target_file_path):
+        if args.new_model:
+            print(f"Starting with new embedding from scratch.")
+        else:
+            print(f"Embedding file {target_file_path} not found.")
+    else:
+        embedding_np = numpy.load_file(target_file_path)
+        return mx.array(embedding_np["embedding"])
+    
     return None
 
 class TransformerEncoderLayer(nn.Module):
@@ -587,6 +684,25 @@ class RecurringTransformerLM(nn.Module): # for query
 def to_indices(line):
     return np.array(spm_model.encode(line))
     
+def process_chunk_embedding(retriever_model, tokenized_chunks, save_enabled = True):
+    chunks_embedding_list = []
+    state = [retriever_model.state]
+
+    @partial(mx.compile, inputs=state)
+    def step(tokenized_chunks_batch):
+        return retriever_model(tokenized_chunks_batch)  # safe, fits in GPU
+
+    for i in range(0, tokenized_chunks.shape[0], args.batch_size):
+        print('processing chunk '+str(i)+' / '+str(tokenized_chunks.shape[0]), end='\r')
+        tokenized_chunks_batch = tokenized_chunks[i:i+args.batch_size]
+        chunks_embedding_batch = step(tokenized_chunks_batch)
+        chunks_embedding_list.append(chunks_embedding_batch)
+        mx.eval(chunks_embedding_batch)
+    chunks_embedding = mx.concatenate(chunks_embedding_list, axis=0)
+    if save_enabled:
+        save_embedding(chunks_embedding)
+    return chunks_embedding
+    
 def retriever_main(args):        
     def loss_fn(model, tokenized_question, tokenized_chunks_samples, p_total_draw, reduction="mean"):
         question_embedding = model(tokenized_question[None, :])
@@ -696,19 +812,7 @@ def retriever_main(args):
                         print(">>> "+spm_model.decode(questions[i]['tokenized']))
                         tokenized_question_preview = mx.array(np.array(questions[i]['tokenized']))
                         question_embedding = model(tokenized_question_preview[None, :])
-
-                        # chunks_embedding = model(tokenized_chunks)
-                        # Assume retriever model is not yet finalized, so not ready to save chunk embeddings to avoid redundant computation.
-                        chunks_embedding_list = []
-                        for i in range(0, tokenized_chunks.shape[0], args.batch_size):
-                            print('processing chunk '+str(i)+' / '+str(tokenized_chunks.shape[0]), end='\r')
-                            tokenized_chunks_batch = tokenized_chunks[i:i+args.batch_size]
-                            chunks_embedding_batch = model(tokenized_chunks_batch)  # safe, fits in GPU
-                            chunks_embedding_list.append(chunks_embedding_batch)
-                            mx.eval(chunks_embedding_batch)
-                        chunks_embedding = mx.concatenate(chunks_embedding_list, axis=0)
-
-
+                        chunks_embedding = process_chunk_embedding(model, tokenized_chunks, save = False)
                         # question_embedding = question_embedding/mx.maximum(mx.linalg.norm(question_embedding, axis=-1), epsilon)
                         # chunks_embedding = chunks_embedding/mx.maximum(mx.linalg.norm(chunks_embedding, axis=-1), epsilon)[:, None]
                         dim = chunks_embedding.shape[-1]
@@ -839,6 +943,16 @@ def main(args):
     qas = datasets.load_generator_dataset(
         save_dir=args.save_dir
     )
+
+    unsupported_qa_path = os.path.join(args.save_dir+"/qa","unsupported-wikipedia-train.json")
+    if os.path.exists(unsupported_qa_path):
+        with open(unsupported_qa_path, "r", encoding="utf-8") as input_file:
+            qa = json.load(input_file)
+            mask = np.ones(len(qas), dtype=bool)
+            mask[qa["question_ids"]] = False
+            qas = qas[mask]
+
+
     qas_chunks = mx.zeros((qas.shape[0], args.top_k, args.context_size), dtype=mx.int32)
 
     # load pretrained retriever
@@ -851,27 +965,37 @@ def main(args):
         latest_retriever_model_file = check_model_file(model_folder, "retriever")
         if latest_retriever_model_file != None:
             retriever_model_file_identifier = latest_retriever_model_file.identifier
+
+    embedding_file_identifier = args.embedding_identifier
+    if embedding_file_identifier is None:
+        latest_embedding_file = check_model_file(model_folder, "embedding")
+        if latest_embedding_file != None:
+            embedding_file_identifier = latest_embedding_file.identifier
   
     _ = load_checkpoint(retriever_model, None, retriever_model_file_identifier)
+    chunks_embedding = load_embedding(embedding_file_identifier)
     chunks, *_ = datasets.load_retriever_dataset(args.context_size, save_dir=args.save_dir)
     np_tokenized_chunks = np.array([entry['tokenized_chunk'] for entry in chunks])
     tokenized_chunks = mx.array(np_tokenized_chunks)
-    # to do list: Once the retriever model is finalized, save chunk embeddings to avoid redundant computation.
-    chunks_embedding_list = []
-    for i in range(0, tokenized_chunks.shape[0], args.batch_size):
-        print('processing chunk '+str(i)+' / '+str(tokenized_chunks.shape[0]), end='\r')
-        tokenized_chunks_batch = tokenized_chunks[i:i+args.batch_size]
-        chunks_embedding_batch = model(tokenized_chunks_batch)  # safe, fits in GPU
-        chunks_embedding_list.append(chunks_embedding_batch)
-        mx.eval(chunks_embedding_batch)
-    chunks_embedding = mx.concatenate(chunks_embedding_list, axis=0)
-    for i, qa in enumerate(qas):
-        tokenized_question = mx.array(qa[0])
-        question_embedding = retriever_model(tokenized_question[None, :])
+    
+    if chunks_embedding is None:
+        chunks_embedding = process_chunk_embedding(retriever_model, tokenized_chunks)
+
+    state = [retriever_model.state]
+
+    @partial(mx.compile, inputs=state)
+    def qa_step(tokenized_question, chunks_embedding):
+        question_embedding = retriever_model(tokenized_question)  # safe, fits in GPU
         dim = chunks_embedding.shape[-1]
         match = ((question_embedding @ chunks_embedding.T)/dim).squeeze()
         top_k = mx.argpartition(-match, kth=args.top_k - 1)[: args.top_k]
-        current_qa_chunks = mx.take(tokenized_chunks, top_k, axis=0)
+        return mx.take(tokenized_chunks, top_k, axis=0)
+    
+    for i, qa in enumerate(qas):
+        print('processing qa pair '+str(i)+' / '+str(qas.shape[0]), end='\r')
+        tokenized_question = mx.array(qa[0])
+        current_qa_chunks = qa_step(tokenized_question[None, :], chunks_embedding)
+        mx.eval(current_qa_chunks)
         qas_chunks[i, ...] = current_qa_chunks
 
     # Initialize model:
