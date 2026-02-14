@@ -142,6 +142,11 @@ parser.add_argument(
     action="store_true",
     help="visualise training progress at a fixed interval",
 )
+parser.add_argument(
+    "--subset",
+    action="store_true",
+    help="use subset of triviaqa-rc for training and testing",
+)
 args = parser.parse_args()
 if not args.gpu:
     mx.set_default_device(mx.cpu)
@@ -812,7 +817,7 @@ def retriever_main(args):
                         print(">>> "+spm_model.decode(questions[i]['tokenized']))
                         tokenized_question_preview = mx.array(np.array(questions[i]['tokenized']))
                         question_embedding = model(tokenized_question_preview[None, :])
-                        chunks_embedding = process_chunk_embedding(model, tokenized_chunks, save = False)
+                        chunks_embedding = process_chunk_embedding(model, tokenized_chunks, save_enabled = False)
                         # question_embedding = question_embedding/mx.maximum(mx.linalg.norm(question_embedding, axis=-1), epsilon)
                         # chunks_embedding = chunks_embedding/mx.maximum(mx.linalg.norm(chunks_embedding, axis=-1), epsilon)[:, None]
                         dim = chunks_embedding.shape[-1]
@@ -823,6 +828,15 @@ def retriever_main(args):
                             decoded = spm_model.decode(chunks[j]['tokenized_chunk'].tolist())
                             print(files[chunks[j]['file_id']]['file_name']+" - "+decoded)
     else:
+        embedding_file_identifier = args.embedding_identifier
+        if embedding_file_identifier is None:
+            latest_embedding_file = check_model_file(model_folder, "embedding")
+            if latest_embedding_file != None:
+                embedding_file_identifier = latest_embedding_file.identifier
+        chunks_embedding = load_embedding(embedding_file_identifier)
+        if chunks_embedding is None:
+            chunks_embedding = process_chunk_embedding(model, tokenized_chunks)
+        
         while True:
             user_input = input(">>> ")
             if user_input == "quit":
@@ -831,16 +845,6 @@ def retriever_main(args):
             user_input_indices = to_indices(user_input.strip().lower())
             tokenized_question = mx.array(np.array(user_input_indices))
             question_embedding = model(tokenized_question[None, :])
-            # chunks_embedding = model(tokenized_chunks)
-            # to do list: Once the retriever model is finalized, save chunk embeddings to avoid redundant computation.
-            chunks_embedding_list = []
-            for i in range(0, tokenized_chunks.shape[0], args.batch_size):
-                print('processing chunk '+str(i)+' / '+str(tokenized_chunks.shape[0]), end='\r')
-                tokenized_chunks_batch = tokenized_chunks[i:i+args.batch_size]
-                chunks_embedding_batch = model(tokenized_chunks_batch)  # safe, fits in GPU
-                chunks_embedding_list.append(chunks_embedding_batch)
-                mx.eval(chunks_embedding_batch)
-            chunks_embedding = mx.concatenate(chunks_embedding_list, axis=0)
             dim = chunks_embedding.shape[-1]
             match = ((question_embedding @ chunks_embedding.T)/dim).squeeze()
             top_k = mx.argpartition(-match, kth=args.top_k - 1)[: args.top_k]
@@ -952,9 +956,6 @@ def main(args):
             mask[qa["question_ids"]] = False
             qas = qas[mask]
 
-
-    qas_chunks = mx.zeros((qas.shape[0], args.top_k, args.context_size), dtype=mx.int32)
-
     # load pretrained retriever
     retriever_model = RecurringTransformerLM(
         args.vocab_size, args.context_size, args.num_blocks, args.dim, args.num_heads, args.checkpoint
@@ -974,7 +975,7 @@ def main(args):
   
     _ = load_checkpoint(retriever_model, None, retriever_model_file_identifier)
     chunks_embedding = load_embedding(embedding_file_identifier)
-    chunks, *_ = datasets.load_retriever_dataset(args.context_size, save_dir=args.save_dir)
+    chunks, *_ = datasets.load_retriever_dataset(args.context_size, save_dir=args.save_dir, generator_inferencing=args.inference)
     np_tokenized_chunks = np.array([entry['tokenized_chunk'] for entry in chunks])
     tokenized_chunks = mx.array(np_tokenized_chunks)
     
@@ -991,12 +992,14 @@ def main(args):
         top_k = mx.argpartition(-match, kth=args.top_k - 1)[: args.top_k]
         return mx.take(tokenized_chunks, top_k, axis=0)
     
-    for i, qa in enumerate(qas):
-        print('processing qa pair '+str(i)+' / '+str(qas.shape[0]), end='\r')
-        tokenized_question = mx.array(qa[0])
-        current_qa_chunks = qa_step(tokenized_question[None, :], chunks_embedding)
-        mx.eval(current_qa_chunks)
-        qas_chunks[i, ...] = current_qa_chunks
+    if not args.inference:
+        qas_chunks = mx.zeros((qas.shape[0], args.top_k, args.context_size), dtype=mx.int32)
+        for i, qa in enumerate(qas):
+            print('processing qa pair '+str(i)+' / '+str(qas.shape[0]), end='\r')
+            tokenized_question = mx.array(qa[0])
+            current_qa_chunks = qa_step(tokenized_question[None, :], chunks_embedding)
+            mx.eval(current_qa_chunks)
+            qas_chunks[i, ...] = current_qa_chunks
 
     # Initialize model:
     model = EncoderDecoderLM(
@@ -1052,7 +1055,7 @@ def main(args):
         qas_indices = range(qas.shape[0])
         for it in train_range:
             optimizer.learning_rate = min(1, it / args.lr_warmup) * args.learning_rate
-            sampled_indices = random.sample(qas_indices, k=args.batch_size)
+            sampled_indices = random.sample(qas_indices, k=min(args.batch_size, qas.shape[0]))
             loss = step([qas, qas_chunks, mx.array(sampled_indices, dtype=mx.int32)])
             mx.eval(state)
             losses.append(loss.item())
@@ -1073,7 +1076,7 @@ def main(args):
                 if args.visualisation:
                     output_deque = deque(maxlen=args.context_size)
                     output_deque.append(BOS)
-                    user_input = "from which country did angola achieve independence in 1975?"
+                    user_input = spm_model.decode(qas[sampled_indices[0], 0].tolist())
                     print(">>> " + user_input)
                     query_indices = to_indices(user_input.strip().lower())
                     query = mx.array(np.array(query_indices))
@@ -1153,7 +1156,7 @@ def main(args):
             print("")
 
 def dataset_main(args):
-    datasets.prepare_generator_qa_dataset(args.from_dir, args.to_dir)
+    datasets.prepare_generator_qa_dataset(args.from_dir, args.to_dir, subset=args.subset) # use subset for local subset copy for testing instead of downloading full dataset
     datasets.qa_json_to_txt(args.save_dir)
     datasets.to_lowercase_files(args.from_dir, args.to_dir)
     datasets.train_tokenizer(args.save_dir)

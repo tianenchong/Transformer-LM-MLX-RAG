@@ -90,7 +90,7 @@ def train_tokenizer(save_dir):
     )
 
 
-def prepare_generator_qa_dataset(from_dir="/tmp", to_dir="/tmp"):
+def prepare_generator_qa_dataset(from_dir="/tmp", to_dir="/tmp", subset = False):
     from_qa_dir = from_dir+"/qa"
     from_qa_filename = 'wikipedia-train.json'
     to_qa_dir = to_dir+"/qa"
@@ -120,8 +120,8 @@ def prepare_generator_qa_dataset(from_dir="/tmp", to_dir="/tmp"):
                 tar.extractall(path=from_dir)
             print(f"Extraction completed. Files are in {from_dir}")
 
-
-    download_dataset(from_dir)
+    if not subset:
+        download_dataset(from_dir)
     model, tokenizer = load("lmstudio-community/LFM2.5-1.2B-Instruct-MLX-8bit")
 
     with open(os.path.join(from_qa_dir, from_qa_filename), "r", encoding="utf-8") as input_file:
@@ -147,7 +147,7 @@ def prepare_generator_qa_dataset(from_dir="/tmp", to_dir="/tmp"):
         with open(os.path.join(to_qa_dir, to_qa_filename), "w", encoding="utf-8") as output_file:
             output_file.write(json.dumps(output))
 
-def load_retriever_dataset(window_size, save_dir="/tmp"):
+def load_retriever_dataset(window_size, save_dir="/tmp", generator_inferencing = False):
     sub_dir = '/evidence/wikipedia'
     doc_dir = save_dir + sub_dir
     qa_dir = save_dir+"/qa"
@@ -174,7 +174,8 @@ def load_retriever_dataset(window_size, save_dir="/tmp"):
             tokenized_file_chunks = padded_tokenized_file.reshape((N, window_size))
             prior_chunks_len = len(chunks)
             chunks += [{"file_id":file_id, "tokenized_chunk":chunk} for chunk in tokenized_file_chunks]
-            files[file_id] = {"file_name": file_name, "chunk_ids":np.arange(prior_chunks_len, prior_chunks_len+tokenized_file_chunks.shape[0]), "question_ids":[]}
+            if not generator_inferencing:
+                files[file_id] = {"file_name": file_name, "chunk_ids":np.arange(prior_chunks_len, prior_chunks_len+tokenized_file_chunks.shape[0]), "question_ids":[]}
         
         def qa_to_array(qa_filename, filenames):
             with open(os.path.join(qa_dir, qa_filename), "r", encoding="utf-8") as input_file:
@@ -186,10 +187,13 @@ def load_retriever_dataset(window_size, save_dir="/tmp"):
                         files[_file_id]["question_ids"].append(id)
                     answers.append(spm_model.encode(entry['Answer']))
 
+        total_filenames = len(filenames)
         for file_id, file_name in enumerate(filenames):
+            print('processing files '+str(file_id)+' / '+str(total_filenames), end='\r')
             doc_to_array(file_name, file_id, chunks)
 
-        qa_to_array(qa_filename, filenames)
+        if not generator_inferencing:
+            qa_to_array(qa_filename, filenames)
 
         return chunks, files, questions, answers
     filenames = [unicodedata.normalize("NFC",f).lower() for f in os.listdir(doc_dir) if f.endswith(".txt")]
