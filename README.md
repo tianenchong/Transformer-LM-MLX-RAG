@@ -118,42 +118,48 @@ The `--target` flag controls which step(s) run:
 - `--target retriever` — train only the retriever model.
 - `--target all` — run the full RAG pipeline (retrieve top-k chunks for each QA pair, then train the encoder-decoder generator).
 
+## Training Tips
+
+Use RAMDISK wherever possible for training to avoid SSD wear and tear.
+
 ### Examples
 
-- Prepare dataset and tokenizer (adjust `--from_dir`/`--to_dir` as needed):
+- Prepare dataset and tokenizer (adjust `--from_dir`/`--to_save_dir` as needed):
 
 ```bash
-python main.py --target dataset --from_dir ~/Downloads/triviaqa-rc --to_dir /Volumes/RAMDisk/transformer-lm-rag --save_dir /Volumes/RAMDisk/transformer-lm-rag
+python main.py --target dataset --from_dir ./triviaqa-rc-subset --subset --to_save_dir /Volumes/RAMDisk/transformer-lm-rag
 ```
 
 - Train retriever only (fast example):
 
 ```bash
-python main.py --target retriever --batch_size 128 --num_iters 10000 --save_dir /Volumes/RAMDisk/transformer-lm-rag
+python main.py --target retriever --batch_size 128 --num_iters 10000 --to_save_dir /Volumes/RAMDisk/transformer-lm-rag
 ```
 
-- Run the complete RAG pipeline (retrieve + train generator):
+- Run the complete RAG generator pipeline (uses pretrained retriever + train generator):
 
 ```bash
-python main.py --target all --batch_size 32 --num_iters 100000 --save_dir /Volumes/RAMDisk/transformer-lm-rag
+python main.py --target all --batch_size 32 --num_iters 100000 --to_save_dir /Volumes/RAMDisk/transformer-lm-rag
 ```
 
-- Interactive inference mode (uses pretrained retriever + generator when available):
+- Interactive full inference mode (uses pretrained retriever + generator when available):
 
 ```bash
-python main.py --target all --inference --save_dir /Volumes/RAMDisk/transformer-lm-rag
+python main.py --target all --inference --to_save_dir /Volumes/RAMDisk/transformer-lm-rag
 ```
 
 ### Key Flags
 
-- `--save_dir` : path to model/data directory (default: `/Volumes/RAMDisk/transformer-lm-rag`)
-- `--from_dir`, `--to_dir` : used by dataset prep to read and write raw input and output directories
+- `--from_dir` : used by dataset prep to read raw input directories
+- `--to_save_dir` : path to model/data output directory (default: `/Volumes/RAMDisk/transformer-lm-rag`)
+- `--subset` : use subset for demo training and  avoid expensive full dataset download
 - `--target` : `none|dataset|retriever|all` (controls the pipeline stage)
 - `--retriever_identifier` : explicit retriever model id to load
+- `--embedding_identifier` : explicit embedding id to load
 - `--identifier` : explicit generator/model id to load
 - `--inference` : run interactive generation loop
 - `--gpu` : enable Metal backend (if supported)
-- `--visualisation` : visualise training progress at a fixed interval
+- `--visualisation` : visualise training output at a fixed interval
 - `--context_size`, `--vocab_size`, `--num_blocks`, `--dim`, `--num_heads`, `--batch_size`, `--num_iters` — model and training hyperparameters
 
 
@@ -168,11 +174,11 @@ python main.py --target all --inference --save_dir /Volumes/RAMDisk/transformer-
 
 ## Data Pipeline Details
 
-- `datasets.prepare_generator_qa_dataset(from_dir, to_dir)` builds simplified QA JSON and expands short answers using an external `mlx_lm` model.
-- `datasets.qa_json_to_txt(save_dir)` writes question/answer text files used for tokenizer training.
-- `datasets.train_tokenizer(save_dir)` trains a SentencePiece BPE tokenizer at `save_dir/tokenizer/wiki.model` (vocab size 10k).
-- `datasets.load_retriever_dataset(window_size, save_dir)` returns chunked document arrays, file metadata, tokenized questions and answers used by the retriever trainer.
-- `datasets.load_generator_dataset(save_dir)` returns q/a pairs padded to powers of two and used by the generator training.
+- `datasets.prepare_generator_qa_dataset(from_dir, to_save_dir)` builds simplified QA JSON and expands short answers using an external `mlx_lm` model.
+- `datasets.qa_json_to_txt(to_save_dir)` writes question/answer text files used for tokenizer training.
+- `datasets.train_tokenizer(to_save_dir)` trains a SentencePiece BPE tokenizer at `to_save_dir/tokenizer/wiki.model` (vocab size 10k).
+- `datasets.load_retriever_dataset(window_size, to_save_dir)` returns chunked document arrays, file metadata, tokenized questions and answers used by the retriever trainer.
+- `datasets.load_generator_dataset(to_save_dir)` returns q/a pairs padded to powers of two and used by the generator training.
 
 ## Retriever & Generator
 
@@ -198,9 +204,8 @@ See `requirements.txt` for pinned runtime deps. The codebase uses the following 
 
 ## Notes & next steps
 
-- If you rely on a RAM disk, update `--save_dir` accordingly; otherwise choose a local writable path.
+- If you rely on a RAM disk, update `--to_save_dir` accordingly; otherwise choose a local writable path.
 - Use `--new_model` when starting fresh.
-- Once the retriever model is finalized, save chunk embeddings to a vector database to avoid redundant computation during future retriever operations. This optimization stores pre-computed embeddings so that the retriever model does not need to re-embed chunks on subsequent queries.
 
 ## Future Work
 

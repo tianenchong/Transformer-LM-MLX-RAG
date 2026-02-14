@@ -27,22 +27,16 @@ parser = argparse.ArgumentParser("Train a encoder-decoder RAG Transformer LM wit
 parser.add_argument("--gpu", action="store_true", help="Use the Metal back-end.")
 parser.add_argument("--seed", type=int, default=42, help="Seed for the RNGs.")
 parser.add_argument(
-    "--save_dir",
-    type=str,
-    default="/Volumes/RAMDisk/transformer-lm-rag",
-    help="Model and data directory for saving, default to /Volumes/RAMDisk/transformer-lm-rag.",
-)
-parser.add_argument(
     "--from_dir",
     type=str,
-    default="~/Downloads/triviaqa-rc",
+    default="./triviaqa-rc-subset",
     help="from data root directory",
 )
 parser.add_argument(
-    "--to_dir",
+    "--to_save_dir",
     type=str,
     default="/Volumes/RAMDisk/transformer-lm-rag",
-    help="to data root directory",
+    help="Model and data directory for saving, default to /Volumes/RAMDisk/transformer-lm-rag.",
 )
 parser.add_argument(
     "--target",
@@ -71,6 +65,12 @@ parser.add_argument(
     type=int,
     default=1024,
     help="Dimensionality of embeddings and hidden layers.",
+)
+parser.add_argument(
+    "--embedding_dim",
+    type=int,
+    default=32,
+    help="Dimensionality of retriever embeddings.",
 )
 parser.add_argument(
     "--num_heads",
@@ -110,6 +110,12 @@ parser.add_argument(
     help="Number of training steps between loss reporting.",
 )
 parser.add_argument(
+    "--retriever_top_k",
+    type=int,
+    default=2,
+    help="Top-k sampling for retriever output.",
+)
+parser.add_argument(
     "--top_k",
     type=int,
     default=50,
@@ -124,7 +130,7 @@ parser.add_argument(
 parser.add_argument(
     "--steps_per_eval",
     type=int,
-    default=1000,
+    default=100,
     help="Number of training steps between validations.",
 )
 parser.add_argument(
@@ -156,7 +162,7 @@ context_size = args.context_size
 steps_per_eval = args.steps_per_eval
 steps_per_report = args.steps_per_report
 
-model_folder = args.save_dir
+model_folder = args.to_save_dir
 model_file_extension = ".safetensors"
 metadata_file_extension = ".metadata"
 
@@ -167,7 +173,7 @@ lock = threading.Lock()
 ctrl_c_count = 0
 ctrl_c_timer = None
 
-tokenizer_file_path = args.save_dir+'/tokenizer/wiki.model'
+tokenizer_file_path = args.to_save_dir+'/tokenizer/wiki.model'
 if os.path.isfile(tokenizer_file_path):
     spm_model = spm.SentencePieceProcessor(model_file=tokenizer_file_path)
 
@@ -207,8 +213,8 @@ def handle_ctrl_c(signum, frame):
 signal.signal(signal.SIGINT, handle_ctrl_c)
 
 def save_invalid_question_ids(question_ids = set()):
-    save_dir = args.save_dir
-    to_qa_dir = save_dir+"/qa"
+    to_save_dir = args.to_save_dir
+    to_qa_dir = to_save_dir+"/qa"
     with open(os.path.join(to_qa_dir, "unsupported-wikipedia-train.json"), "w", encoding="utf-8") as output_file:
         output_file.write(json.dumps({"question_ids": list(question_ids)}))
 
@@ -650,7 +656,7 @@ class RecurringTransformerLM(nn.Module): # for query
         self.transformer = TransformerEncoder(
             num_layers, dims, num_heads, checkpoint=checkpoint
         )
-        self.out_proj = nn.Linear(dims, 64)
+        self.out_proj = nn.Linear(dims, args.embedding_dim)
 
     def self_attention(self, x):
         x = self.embedding(x)
@@ -773,7 +779,7 @@ def retriever_main(args):
         optimizer.update(model, grads)
         return loss
         
-    chunks, files, questions, answers = datasets.load_retriever_dataset(args.context_size, save_dir=args.save_dir)
+    chunks, files, questions, answers = datasets.load_retriever_dataset(args.context_size, to_save_dir=args.to_save_dir)
     np_tokenized_chunks = np.array([entry['tokenized_chunk'] for entry in chunks])
     tokenized_chunks = mx.array(np_tokenized_chunks)
     if not args.inference:
@@ -822,7 +828,7 @@ def retriever_main(args):
                         # chunks_embedding = chunks_embedding/mx.maximum(mx.linalg.norm(chunks_embedding, axis=-1), epsilon)[:, None]
                         dim = chunks_embedding.shape[-1]
                         match = ((question_embedding @ chunks_embedding.T)/dim).squeeze()
-                        top_k = mx.argpartition(-match, kth=args.top_k - 1)[: args.top_k]
+                        top_k = mx.argpartition(-match, kth=args.retriever_top_k - 1)[: args.retriever_top_k]
                         top_k_list = top_k.tolist()
                         for j in top_k_list:
                             decoded = spm_model.decode(chunks[j]['tokenized_chunk'].tolist())
@@ -847,7 +853,7 @@ def retriever_main(args):
             question_embedding = model(tokenized_question[None, :])
             dim = chunks_embedding.shape[-1]
             match = ((question_embedding @ chunks_embedding.T)/dim).squeeze()
-            top_k = mx.argpartition(-match, kth=args.top_k - 1)[: args.top_k]
+            top_k = mx.argpartition(-match, kth=args.retriever_top_k - 1)[: args.retriever_top_k]
             top_k_list = np.asarray(top_k)
             for j in top_k_list:
                 decoded = spm_model.decode(chunks[j]['tokenized_chunk'].tolist())
@@ -945,10 +951,10 @@ def main(args):
 
     # Load vocab and dataset:
     qas = datasets.load_generator_dataset(
-        save_dir=args.save_dir
+        to_save_dir=args.to_save_dir
     )
 
-    unsupported_qa_path = os.path.join(args.save_dir+"/qa","unsupported-wikipedia-train.json")
+    unsupported_qa_path = os.path.join(args.to_save_dir+"/qa","unsupported-wikipedia-train.json")
     if os.path.exists(unsupported_qa_path):
         with open(unsupported_qa_path, "r", encoding="utf-8") as input_file:
             qa = json.load(input_file)
@@ -975,7 +981,7 @@ def main(args):
   
     _ = load_checkpoint(retriever_model, None, retriever_model_file_identifier)
     chunks_embedding = load_embedding(embedding_file_identifier)
-    chunks, *_ = datasets.load_retriever_dataset(args.context_size, save_dir=args.save_dir, generator_inferencing=args.inference)
+    chunks, *_ = datasets.load_retriever_dataset(args.context_size, to_save_dir=args.to_save_dir, generator_inferencing=args.inference)
     np_tokenized_chunks = np.array([entry['tokenized_chunk'] for entry in chunks])
     tokenized_chunks = mx.array(np_tokenized_chunks)
     
@@ -989,11 +995,11 @@ def main(args):
         question_embedding = retriever_model(tokenized_question)  # safe, fits in GPU
         dim = chunks_embedding.shape[-1]
         match = ((question_embedding @ chunks_embedding.T)/dim).squeeze()
-        top_k = mx.argpartition(-match, kth=args.top_k - 1)[: args.top_k]
+        top_k = mx.argpartition(-match, kth=args.retriever_top_k - 1)[: args.retriever_top_k]
         return mx.take(tokenized_chunks, top_k, axis=0)
     
     if not args.inference:
-        qas_chunks = mx.zeros((qas.shape[0], args.top_k, args.context_size), dtype=mx.int32)
+        qas_chunks = mx.zeros((qas.shape[0], args.retriever_top_k, args.context_size), dtype=mx.int32)
         for i, qa in enumerate(qas):
             print('processing qa pair '+str(i)+' / '+str(qas.shape[0]), end='\r')
             tokenized_question = mx.array(qa[0])
@@ -1083,7 +1089,7 @@ def main(args):
                     query_embedding = retriever_model(query[None, :])
                     dim = chunks_embedding.shape[-1]
                     match = ((query_embedding @ chunks_embedding.T)/dim).squeeze()
-                    top_k = mx.argpartition(-match, kth=args.top_k - 1)[: args.top_k]
+                    top_k = mx.argpartition(-match, kth=args.retriever_top_k - 1)[: args.retriever_top_k]
                     chunks = mx.take(tokenized_chunks, top_k, axis=0)
                     qs_encoded, chunks_encoded = model.encode(query[None, :], chunks[None, :])
                     initial = True
@@ -1125,7 +1131,7 @@ def main(args):
             query_embedding = retriever_model(query[None, :])
             dim = chunks_embedding.shape[-1]
             match = ((query_embedding @ chunks_embedding.T)/dim).squeeze()
-            top_k = mx.argpartition(-match, kth=args.top_k - 1)[: args.top_k]
+            top_k = mx.argpartition(-match, kth=args.retriever_top_k - 1)[: args.retriever_top_k]
             chunks = mx.take(tokenized_chunks, top_k, axis=0)
             qs_encoded, chunks_encoded = model.encode(query[None, :], chunks[None, :])
             initial = True
@@ -1156,10 +1162,10 @@ def main(args):
             print("")
 
 def dataset_main(args):
-    datasets.prepare_generator_qa_dataset(args.from_dir, args.to_dir, subset=args.subset) # use subset for local subset copy for testing instead of downloading full dataset
-    datasets.qa_json_to_txt(args.save_dir)
-    datasets.to_lowercase_files(args.from_dir, args.to_dir)
-    datasets.train_tokenizer(args.save_dir)
+    datasets.prepare_generator_qa_dataset(args.from_dir, args.to_save_dir, subset=args.subset) # use subset for local subset copy for testing instead of downloading full dataset
+    datasets.qa_json_to_txt(args.to_save_dir)
+    datasets.to_lowercase_files(args.from_dir, args.to_save_dir)
+    datasets.train_tokenizer(args.to_save_dir)
 
 if __name__ == "__main__":
     if args.target == "dataset":

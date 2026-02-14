@@ -19,16 +19,16 @@ BOS = 1
 EOS = 2
 UNK = 3
 
-def qa_json_to_txt(save_dir):
+def qa_json_to_txt(to_save_dir):
     sub_dir = '/qa'
-    save_dir += sub_dir
-    os.makedirs(save_dir, exist_ok=True)
+    to_save_dir += sub_dir
+    os.makedirs(to_save_dir, exist_ok=True)
 
     # Loop through all files in the input folder
     file_identifier = "wikipedia-train-simplified"
 
-    input_path = os.path.join(save_dir, file_identifier+".json")
-    output_path = os.path.join(save_dir, file_identifier+".txt")
+    input_path = os.path.join(to_save_dir, file_identifier+".json")
+    output_path = os.path.join(to_save_dir, file_identifier+".txt")
     if os.path.exists(input_path):
         # Read, lowercase, and write
         with open(input_path, "r", encoding="utf-8") as input_file:
@@ -40,18 +40,18 @@ def qa_json_to_txt(save_dir):
 
         print(f"Processed {file_identifier+".json"}")
 
-def to_lowercase_files(from_dir, to_dir):
+def to_lowercase_files(from_dir, to_save_dir):
     sub_dir = '/evidence/wikipedia'
-    to_dir += sub_dir
+    to_save_dir += sub_dir
     from_dir += sub_dir
     # Create output folder if it doesn't exist
-    os.makedirs(to_dir, exist_ok=True)
+    os.makedirs(to_save_dir, exist_ok=True)
 
     # Loop through all files in the input folder
     for filename in os.listdir(from_dir):
         if filename.endswith(".txt"):  # only process .txt files
             input_path = os.path.join(from_dir, filename)
-            output_path = os.path.join(to_dir, filename)
+            output_path = os.path.join(to_save_dir, filename)
 
             # Read, lowercase, and write
             with open(input_path, "r", encoding="utf-8") as f:
@@ -62,12 +62,12 @@ def to_lowercase_files(from_dir, to_dir):
 
             print(f"Processed {filename}")
 
-def train_tokenizer(save_dir):
-    root_dir = save_dir
+def train_tokenizer(to_save_dir):
+    root_dir = to_save_dir
     sub_dir = '/evidence/wikipedia'
-    save_dir += sub_dir
+    to_save_dir += sub_dir
     qa_dir = root_dir+"/qa"
-    txt_files = [os.path.join(save_dir, f) for f in os.listdir(save_dir) if f.endswith(".txt")] + [os.path.join(qa_dir, f) for f in os.listdir(qa_dir) if f.endswith(".txt")]
+    txt_files = [os.path.join(to_save_dir, f) for f in os.listdir(to_save_dir) if f.endswith(".txt")] + [os.path.join(qa_dir, f) for f in os.listdir(qa_dir) if f.endswith(".txt")]
     target_dir = root_dir+"/tokenizer"
     os.makedirs(target_dir, exist_ok=True)
     agg_file_path = target_dir+"/files.txt"
@@ -90,10 +90,10 @@ def train_tokenizer(save_dir):
     )
 
 
-def prepare_generator_qa_dataset(from_dir="/tmp", to_dir="/tmp", subset = False):
+def prepare_generator_qa_dataset(from_dir="/tmp", to_save_dir="/tmp", subset = False):
     from_qa_dir = from_dir+"/qa"
     from_qa_filename = 'wikipedia-train.json'
-    to_qa_dir = to_dir+"/qa"
+    to_qa_dir = to_save_dir+"/qa"
     to_qa_filename = 'wikipedia-train-simplified.json'
 
     def download_dataset(from_dir="/tmp"):
@@ -147,13 +147,13 @@ def prepare_generator_qa_dataset(from_dir="/tmp", to_dir="/tmp", subset = False)
         with open(os.path.join(to_qa_dir, to_qa_filename), "w", encoding="utf-8") as output_file:
             output_file.write(json.dumps(output))
 
-def load_retriever_dataset(window_size, save_dir="/tmp", generator_inferencing = False):
+def load_retriever_dataset(window_size, to_save_dir="/tmp", generator_inferencing = False):
     sub_dir = '/evidence/wikipedia'
-    doc_dir = save_dir + sub_dir
-    qa_dir = save_dir+"/qa"
+    doc_dir = to_save_dir + sub_dir
+    qa_dir = to_save_dir+"/qa"
 
     def _load(qa_filename, filenames):
-        spm_model = spm.SentencePieceProcessor(model_file=save_dir+'/tokenizer/wiki.model')
+        spm_model = spm.SentencePieceProcessor(model_file=to_save_dir+'/tokenizer/wiki.model')
         # chunk_id -> file_id -> question_id (make sure they match up with current question for positive match, else negative match)
         # question_id -> file_ids -> chunk_ids
         chunks = [] # chunk -> file_id
@@ -200,13 +200,13 @@ def load_retriever_dataset(window_size, save_dir="/tmp", generator_inferencing =
     qa_filename = qa_dir + '/wikipedia-train-simplified.json'
     return _load(qa_filename, filenames)
 
-def load_generator_dataset(save_dir="/tmp"):
+def load_generator_dataset(to_save_dir="/tmp"):
     sub_dir = '/evidence/wikipedia'
-    doc_dir = save_dir + sub_dir
-    qa_dir = save_dir+"/qa"
+    doc_dir = to_save_dir + sub_dir
+    qa_dir = to_save_dir+"/qa"
     
     def _load(qa_filename):
-        spm_model = spm.SentencePieceProcessor(model_file=save_dir+'/tokenizer/wiki.model')
+        spm_model = spm.SentencePieceProcessor(model_file=to_save_dir+'/tokenizer/wiki.model')
         # chunk_id -> file_id -> question_id (make sure they match up with current question for positive match, else negative match)
         # question_id -> file_ids -> chunk_ids
         qas = []
@@ -233,13 +233,3 @@ def load_generator_dataset(save_dir="/tmp"):
 
 if __name__ == "__main__":
     pass
-    # to_dir = save_dir = "/Volumes/RAMDisk/transformer-lm-rag-subset"
-    # from_dir = "/Users/tianheng/Downloads/triviaqa-rc-subset"
-    # 1: prepare_generator_qa_dataset(from_dir, to_dir)
-    # 2: qa_json_to_txt(save_dir)
-    # 3: train_tokenizer(save_dir)
-
-    # prepare_generator_qa_dataset(from_dir, to_dir)
-    # load_retriever_dataset(64, save_dir=save_dir)
-    # qa_json_to_txt(save_dir)
-    # train_tokenizer(save_dir)
